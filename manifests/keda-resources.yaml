@@ -1,0 +1,44 @@
+---
+# TriggerAuthentication — tells KEDA to use GCP Workload Identity (pod identity)
+# No secrets or key files needed — auth flows through GKE metadata server
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: pulseq-gcp-trigger-auth
+  namespace: default
+spec:
+  podIdentity:
+    provider: gcp
+
+---
+# ScaledObject — the core KEDA config
+# Watches pulseq-demo-subscription and scales pulseq-consumer deployment
+# Rule: 1 replica per 5 unacked messages, 0 replicas when queue is empty
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pulseq-consumer-scaledobject
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pulseq-consumer
+
+  pollingInterval: 5       # Check queue depth every 5 seconds
+  cooldownPeriod: 30       # Wait 30s before scaling down after queue drains
+  minReplicaCount: 0       # Scale to zero when idle (cost saving)
+  maxReplicaCount: 10      # Hard cap at 10 pods
+
+  triggers:
+    - type: gcp-pubsub
+      authenticationRef:
+        kind: TriggerAuthentication
+        name: pulseq-gcp-trigger-auth
+      metadata:
+        # SubscriptionSize = total unacked message count
+        # 1 replica spins up per 5 unacked messages
+        # e.g. 25 msgs → 5 replicas, 50 msgs → 10 replicas (capped)
+        mode: "SubscriptionSize"
+        value: "5"
+        subscriptionName: "pulseq-demo-subscription"

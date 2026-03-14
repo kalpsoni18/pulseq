@@ -1,0 +1,84 @@
+name: Deploy backend
+
+on:
+  push:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend.yml'
+    branches: [main]
+
+env:
+  REGION: us-central1
+  SERVICE_NAME: pulseq-api
+  IMAGE: ${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend
+
+jobs:
+  test:
+    name: Lint & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check backend/
+
+  deploy:
+    name: Build & deploy to Cloud Run
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # Required for Workload Identity Federation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation — no JSON key)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend:${{ github.sha }}"
+          docker build -t "$IMAGE" ./backend
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend:${{ github.sha }}"
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image "$IMAGE" \
+            --region ${{ env.REGION }} \
+            --service-account ${{ secrets.GCP_SA_EMAIL }} \
+            --set-env-vars "PROJECT_ID=${{ vars.PROJECT_ID }}" \
+            --no-allow-unauthenticated \
+            --min-instances 1 \
+            --max-instances 5 \
+            --memory 512Mi \
+            --cpu 1 \
+            --project ${{ vars.PROJECT_ID }}
+
+      - name: Show deployed URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --format 'value(status.url)' \
+            --project ${{ vars.PROJECT_ID }}

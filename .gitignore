@@ -1,0 +1,35 @@
+# Environment files — NEVER commit these
+.env
+.env.local
+*.env
+
+# GCP credentials — NEVER commit these
+*credentials*.json
+*service-account*.json
+firebase-credentials.json
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/*.tfvars
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/

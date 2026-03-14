@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulseq-consumer
+  namespace: default
+  labels:
+    app: pulseq-consumer
+spec:
+  # replicas intentionally omitted — KEDA manages this via HPA
+  selector:
+    matchLabels:
+      app: pulseq-consumer
+  template:
+    metadata:
+      labels:
+        app: pulseq-consumer
+    spec:
+      serviceAccountName: pulseq-consumer   # Workload Identity SA
+      terminationGracePeriodSeconds: 30      # Give consumer time to ack in-flight messages
+
+      containers:
+        - name: consumer
+          # Replace REGION, PROJECT_ID, and IMAGE_TAG at deploy time
+          # e.g. via: envsubst < manifests/deployment.yaml | kubectl apply -f -
+          image: REGION-docker.pkg.dev/PROJECT_ID/pulseq/consumer:IMAGE_TAG
+          imagePullPolicy: Always
+
+          env:
+            - name: PUBSUB_PROJECT
+              value: "PROJECT_ID"
+            - name: PUBSUB_SUBSCRIPTION
+              value: "pulseq-demo-subscription"
+            - name: PULL_TIMEOUT
+              value: "5"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import os; os.kill(1, 0)"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
