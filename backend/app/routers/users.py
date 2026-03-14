@@ -27,7 +27,7 @@ async def list_users(
 ):
     """Lists all users in the current user's org. Org-isolated."""
     result = await db.execute(
-        select(User).where(User.org_id == user.org_id, User.is_active == True)
+        select(User).where(User.org_id == user.org_id, User.is_active)
     )
     return result.scalars().all()
 

@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 import re
-import firebase_admin
 from firebase_admin import auth as firebase_auth
 from google.cloud import pubsub_v1
 
