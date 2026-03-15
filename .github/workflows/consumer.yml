@@ -8,10 +8,6 @@ on:
       - '.github/workflows/consumer.yml'
     branches: [main]
 
-env:
-  REGION: us-central1
-  CLUSTER: pulseq-cluster
-
 jobs:
   deploy:
     name: Build, push & rollout to GKE
@@ -27,6 +23,8 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -44,6 +42,8 @@ jobs:
             --project pulseq-1773525063
 
       - name: Apply K8s manifests
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
         run: |
           IMAGE="us-central1-docker.pkg.dev/pulseq-1773525063/pulseq/consumer:${{ github.sha }}"
           export IMAGE_TAG="${{ github.sha }}"
@@ -55,7 +55,11 @@ jobs:
           kubectl set image deployment/pulseq-consumer consumer="$IMAGE"
 
       - name: Wait for rollout
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
         run: kubectl rollout status deployment/pulseq-consumer --timeout=120s
 
       - name: Show pod status
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
         run: kubectl get pods -l app=pulseq-consumer
