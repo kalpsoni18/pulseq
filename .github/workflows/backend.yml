@@ -7,78 +7,55 @@ on:
       - '.github/workflows/backend.yml'
     branches: [main]
 
-env:
-  REGION: us-central1
-  SERVICE_NAME: pulseq-api
-  IMAGE: ${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend
-
 jobs:
   test:
-    name: Lint & test
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
-      - name: Install deps
-        run: pip install -r backend/requirements.txt
-
-      - name: Lint
+      - name: Install and lint
         run: |
+          pip install -r backend/requirements.txt
           pip install ruff
           ruff check backend/
 
   deploy:
-    name: Build & deploy to Cloud Run
+    name: Build & deploy
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write   # Required for Workload Identity Federation
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Authenticate to GCP (Workload Identity Federation — no JSON key)
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          credentials_json: ${{ secrets.GCP_CREDENTIALS_JSON }}
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker auth
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Configure Docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      - name: Build and push image
+      - name: Build and push
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend:${{ github.sha }}"
-          docker build -t "$IMAGE" ./backend
+          IMAGE="us-central1-docker.pkg.dev/pulseq-1773525063/pulseq/backend:${{ github.sha }}"
+          docker build --platform linux/amd64 -t "$IMAGE" ./backend
           docker push "$IMAGE"
 
       - name: Deploy to Cloud Run
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/pulseq/backend:${{ github.sha }}"
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
+          IMAGE="us-central1-docker.pkg.dev/pulseq-1773525063/pulseq/backend:${{ github.sha }}"
+          gcloud run deploy pulseq-api \
             --image "$IMAGE" \
-            --region ${{ env.REGION }} \
-            --service-account ${{ secrets.GCP_SA_EMAIL }} \
-            --set-env-vars "PROJECT_ID=${{ vars.PROJECT_ID }}" \
-            --no-allow-unauthenticated \
+            --region us-central1 \
+            --service-account pulseq-backend@pulseq-1773525063.iam.gserviceaccount.com \
+            --set-env-vars "PROJECT_ID=pulseq-1773525063,GOOGLE_CLOUD_PROJECT=pulseq-1773525063,DATABASE_URL=postgresql+asyncpg://pulseq:PulseQ2024Secure@172.22.0.3:5432/pulseqdb" \
+            --allow-unauthenticated \
             --min-instances 1 \
-            --max-instances 5 \
-            --memory 512Mi \
-            --cpu 1 \
-            --project ${{ vars.PROJECT_ID }}
-
-      - name: Show deployed URL
-        run: |
-          gcloud run services describe ${{ env.SERVICE_NAME }} \
-            --region ${{ env.REGION }} \
-            --format 'value(status.url)' \
-            --project ${{ vars.PROJECT_ID }}
+            --memory 1Gi \
+            --vpc-connector pulseq-connector \
+            --vpc-egress private-ranges-only \
+            --project pulseq-1773525063
