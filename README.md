@@ -1,292 +1,299 @@
-# PulseQ — Multi-tenant Event-Driven Autoscaling SaaS on GCP
+# PulseQ
 
-PulseQ is a production-grade SaaS platform demonstrating:
-- **Multi-tenant auth** via GCP Identity Platform (Firebase Auth) + FastAPI JWT middleware
-- **Per-org isolated Pub/Sub queues** provisioned on demand
-- **KEDA event-driven autoscaling** on GKE — 0 to 10 pods based on queue depth
-- **Workload Identity** — no credential files anywhere
-- **Terraform IaC** for all GCP infrastructure
-- **GitHub Actions CI/CD** with Workload Identity Federation (no JSON keys in CI either)
-- **React dashboard** — live scaling visualisation, message publisher
+**Event-driven autoscaling message queue SaaS — built on GCP**
+
+PulseQ lets your application publish messages to an isolated queue and automatically scales Kubernetes worker pods from **0 to 10** based on queue depth. No idle compute. No manual scaling. Pay for exactly what you use.
+
+![Architecture](https://img.shields.io/badge/GCP-Pub%2FSub-blue) ![KEDA](https://img.shields.io/badge/KEDA-Autoscaling-green) ![Terraform](https://img.shields.io/badge/Terraform-IaC-purple) ![CI/CD](https://img.shields.io/badge/GitHub_Actions-CI%2FCD-orange)
 
 ---
 
-## Prerequisites
+## How it works
 
-Install these before starting:
+```
+Your App  ──POST /messages/publish──►  FastAPI (Cloud Run)
+                                              │
+                                              ▼
+                                       GCP Pub/Sub
+                                      (per-org topic)
+                                              │
+                               ┌─────────────┘
+                               ▼
+                        KEDA ScaledObject
+                     polls every 5 seconds
+                               │
+                    25 msgs → 5 pods
+                    50 msgs → 10 pods
+                     0 msgs → 0 pods
+                               │
+                               ▼
+                    GKE Consumer Pods (0–10)
+                    pull, process, ack messages
+```
+
+**The scaling rule:** 1 pod per 5 unacked messages, maximum 10 pods, minimum 0. After the queue drains, pods scale back to zero after a 30-second cooldown.
+
+---
+
+## Features
+
+- **Multi-tenant isolation** — every organisation gets a dedicated Pub/Sub topic and subscription. Tenant A cannot access Tenant B's queue, data, or workers.
+- **Scale to zero** — no pods run when there are no messages. Zero idle compute cost.
+- **Firebase Auth** — Google SSO and Email/Password sign-in. JWT custom claims enforce org-level access on every API request.
+- **Infrastructure as Code** — all 16 GCP resources defined in Terraform. Reproducible from scratch in 15 minutes.
+- **CI/CD** — GitHub Actions builds, pushes, and deploys on every commit to `main`. Three pipelines: backend, consumer, frontend.
+- **Workload Identity** — Kubernetes service accounts bound to GCP IAM service accounts. No credential files anywhere.
+- **Private database** — Cloud SQL on a private VPC with no public IP. Connection string stored in Secret Manager.
+- **Security hardened** — CORS restricted to frontend domain, Dependabot enabled, SECURITY.md in place, branch protection active.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    GCP Project                          │
+│                                                         │
+│   ┌──────────────┐    ┌──────────────────────────────┐  │
+│   │   React UI   │    │   FastAPI Backend             │  │
+│   │  Cloud Run   │───►│   Cloud Run                  │  │
+│   │  (public)    │    │   Firebase JWT auth           │  │
+│   └──────────────┘    │   org_id on every request     │  │
+│                       └──────────┬───────────────────┘  │
+│                                  │                       │
+│              ┌───────────────────┼──────────────┐       │
+│              ▼                   ▼              ▼        │
+│        Cloud SQL           Pub/Sub         Secret        │
+│        (private VPC)      per-org topic   Manager        │
+│        orgs, users                                       │
+│                                  │                       │
+│                                  ▼                       │
+│   ┌──────────────────────────────────────────────────┐   │
+│   │              GKE Cluster                        │   │
+│   │                                                  │   │
+│   │   KEDA ScaledObject ──► HPA ──► Consumer Pods   │   │
+│   │   (polls Cloud Monitoring     (0 to 10 pods)    │   │
+│   │    every 5 seconds)                              │   │
+│   │                                                  │   │
+│   │   Workload Identity: K8s SA ──► GCP IAM SA      │   │
+│   └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18 + TypeScript + Vite |
+| Backend API | FastAPI (Python 3.12) on Cloud Run |
+| Authentication | Firebase Identity Platform (Google SSO + Email/Password) |
+| Database | Cloud SQL PostgreSQL 15 (private VPC) |
+| Message queue | GCP Pub/Sub (one topic per org) |
+| Autoscaling | KEDA on GKE (Kubernetes Event-Driven Autoscaling) |
+| Infrastructure | Terraform (16 resources) |
+| CI/CD | GitHub Actions (3 pipelines) |
+| Container registry | GCP Artifact Registry |
+| Secrets | GCP Secret Manager |
+| Networking | VPC + VPC Connector |
+| Security | GCP Workload Identity |
+
+---
+
+## Real-world use cases
+
+| Use case | What gets published | What workers do |
+|----------|-------------------|-----------------|
+| E-commerce | Order placed events | Process payment, update inventory, send confirmation |
+| Media platform | Video uploaded events | Transcode to multiple formats in parallel |
+| SaaS product | Report generation jobs | Run heavy processing without blocking the user |
+| Fintech | Transaction events | Fraud detection, ledger updates, alerts |
+| Marketing tool | Campaign send jobs | Deliver 100,000 emails without timeouts |
+
+---
+
+## Quick start
+
+### Prerequisites
 
 | Tool | Version | Install |
 |------|---------|---------|
-| `gcloud` CLI | latest | https://cloud.google.com/sdk/docs/install |
-| `terraform` | >= 1.5 | https://developer.hashicorp.com/terraform/install |
+| `gcloud` CLI | 560+ | [cloud.google.com/sdk](https://cloud.google.com/sdk/docs/install) |
+| `terraform` | 1.5+ | `brew install hashicorp/tap/terraform` |
 | `kubectl` | latest | `gcloud components install kubectl` |
-| `helm` | >= 3.12 | https://helm.sh/docs/intro/install |
-| `docker` | latest | https://docs.docker.com/get-docker |
-| `node` | >= 20 | https://nodejs.org |
-| `python` | >= 3.12 | https://www.python.org |
+| `gke-gcloud-auth-plugin` | latest | `gcloud components install gke-gcloud-auth-plugin` |
+| `helm` | 3.12+ | `brew install helm` |
+| `docker` | 25+ | [docker.com](https://docs.docker.com/get-docker) |
+| `node` | 20+ | [nodejs.org](https://nodejs.org) |
+| `python` | 3.12+ | [python.org](https://www.python.org) |
 
-Also: a Google account with billing enabled.
+> **Apple Silicon Mac:** Add `export DOCKER_DEFAULT_PLATFORM=linux/amd64` to your `~/.zshrc` before building. GKE requires AMD64 images.
 
 ---
-
-## Step-by-step deployment guide
 
 ### Step 1 — Clone and authenticate
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pulseq.git
+git clone https://github.com/kalpsoni18/pulseq.git
 cd pulseq
 gcloud auth login
 gcloud auth application-default login
 ```
 
----
-
 ### Step 2 — Bootstrap GCP project
-
-This creates the GCP project, enables APIs, creates service accounts, and writes your `.env` file.
 
 ```bash
 chmod +x scripts/bootstrap.sh
 bash scripts/bootstrap.sh
-```
-
-This takes about 2–3 minutes. When done, source your env:
-
-```bash
 source .env
-echo "Project: $PROJECT_ID"
 ```
 
----
+> If billing link fails: `gcloud beta billing accounts list` then `gcloud beta billing projects link $PROJECT_ID --billing-account=YOUR_ID`
 
-### Step 3 — Provision infrastructure with Terraform
+### Step 3 — Provision infrastructure (~12 min)
 
 ```bash
-cd infra
-
-# Initialise Terraform providers
-terraform init
-
-# Preview what will be created (GKE, Cloud SQL, Pub/Sub, VPC, Secrets)
-terraform plan \
-  -var="project_id=$PROJECT_ID" \
-  -var="region=us-central1" \
-  -var="db_password=YourSecurePassword123!"
-
-# Apply (takes ~10–15 min for GKE + Cloud SQL)
+cd infra && terraform init
 terraform apply \
   -var="project_id=$PROJECT_ID" \
   -var="region=us-central1" \
-  -var="db_password=YourSecurePassword123!"
-
+  -var="db_password=YourSecurePassword"
 cd ..
 ```
 
-After apply, note the outputs — especially `connect_to_cluster`.
+> If Workload Identity binding fails: GKE is still booting. Wait 2 min and re-run `terraform apply`.
 
----
-
-### Step 4 — Connect to GKE and install KEDA
+### Step 4 — Connect to GKE + install KEDA
 
 ```bash
-# Get kubectl credentials
 gcloud container clusters get-credentials pulseq-cluster \
-  --region us-central1 \
-  --project $PROJECT_ID
+  --region us-central1 --project $PROJECT_ID
 
-# Verify connection
-kubectl get nodes
-
-# Install KEDA via Helm
-helm repo add kedacore https://kedacore.github.io/charts
-helm repo update
-
+helm repo add kedacore https://kedacore.github.io/charts && helm repo update
 helm upgrade --install keda kedacore/keda \
-  --namespace keda \
-  --create-namespace \
+  --namespace keda --create-namespace \
   --set "serviceAccount.annotations.iam\.gke\.io/gcp-service-account=keda-operator@${PROJECT_ID}.iam.gserviceaccount.com" \
   --wait
-
-# Verify KEDA is running
-kubectl get pods -n keda
 ```
 
----
-
-### Step 5 — Set up Firebase / Identity Platform
-
-1. Go to https://console.firebase.google.com
-2. Click **Add project** → select your GCP project (`$PROJECT_ID`)
-3. Go to **Authentication** → **Sign-in method** → enable **Email/Password**
-4. Go to **Project settings** → **Your apps** → click **</>** (Web)
-5. Register app as "PulseQ Web"
-6. Copy the Firebase config values — you'll need them in Step 7
-
-Also download a service account key for local backend dev:
-- Firebase Console → Project settings → **Service accounts** → **Generate new private key**
-- Save as `backend/firebase-credentials.json` (never commit this)
-
----
-
-### Step 6 — Build and deploy the consumer to GKE
+### Step 5 — Create VPC connector
 
 ```bash
-# Authenticate Docker to Artifact Registry
-gcloud auth configure-docker ${REGION}-docker.pkg.dev
+gcloud compute networks subnets create pulseq-connector-subnet \
+  --network pulseq-vpc --region us-central1 \
+  --range 10.3.0.0/28 --project $PROJECT_ID
 
-# Build and push consumer image
-CONSUMER_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/pulseq/consumer:v1"
-docker build -t "$CONSUMER_IMAGE" ./consumer
-docker push "$CONSUMER_IMAGE"
+gcloud compute networks vpc-access connectors create pulseq-connector \
+  --region us-central1 --subnet pulseq-connector-subnet \
+  --subnet-project $PROJECT_ID \
+  --min-instances 2 --max-instances 3 --project $PROJECT_ID
+```
 
-# Apply manifests (substitute PROJECT_ID and IMAGE_TAG)
-export PROJECT_ID=$PROJECT_ID
-export REGION=us-central1
+### Step 6 — Deploy consumer to GKE
+
+```bash
+gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+docker build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/consumer:v1 ./consumer
+docker push us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/consumer:v1
+
 export IMAGE_TAG=v1
-
 envsubst < manifests/serviceaccounts.yaml | kubectl apply -f -
-envsubst < manifests/deployment.yaml      | kubectl apply -f -
+envsubst < manifests/deployment.yaml | kubectl apply -f -
 kubectl apply -f manifests/keda-resources.yaml
-
-# Verify
-kubectl get pods
-kubectl get scaledobject
-kubectl get hpa
+kubectl set image deployment/pulseq-consumer \
+  consumer=us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/consumer:v1
 ```
 
----
-
-### Step 7 — Deploy the FastAPI backend to Cloud Run
+### Step 7 — Deploy backend to Cloud Run
 
 ```bash
-# Build and push backend image
-BACKEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/pulseq/backend:v1"
-docker build -t "$BACKEND_IMAGE" ./backend
-docker push "$BACKEND_IMAGE"
+docker build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/backend:v1 ./backend
+docker push us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/backend:v1
 
-# Deploy to Cloud Run
 gcloud run deploy pulseq-api \
-  --image "$BACKEND_IMAGE" \
+  --image us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/backend:v1 \
   --region us-central1 \
-  --service-account "pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --set-env-vars "PROJECT_ID=${PROJECT_ID}" \
-  --no-allow-unauthenticated \
-  --min-instances 1 \
-  --memory 512Mi \
+  --service-account pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com \
+  --set-env-vars "PROJECT_ID=${PROJECT_ID},GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+  --set-secrets "DATABASE_URL=pulseq-db-url:latest" \
+  --allow-unauthenticated --min-instances 1 --memory 1Gi \
+  --vpc-connector pulseq-connector --vpc-egress private-ranges-only \
   --project $PROJECT_ID
-
-# Get the backend URL
-BACKEND_URL=$(gcloud run services describe pulseq-api \
-  --region us-central1 \
-  --format 'value(status.url)' \
-  --project $PROJECT_ID)
-
-echo "Backend URL: $BACKEND_URL"
 ```
 
----
+Grant Firebase permissions:
 
-### Step 8 — Deploy the React frontend
+```bash
+for role in roles/firebase.admin roles/identitytoolkit.admin roles/run.admin; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="$role"
+done
+
+gcloud iam service-accounts add-iam-policy-binding \
+  pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com \
+  --member="serviceAccount:pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+### Step 8 — Firebase setup (browser)
+
+1. [console.firebase.google.com](https://console.firebase.google.com) → Add project → select `$PROJECT_ID`
+2. Authentication → Sign-in method → enable **Email/Password** and **Google**
+3. Project settings → Your apps → `</>` Web → register app → copy `firebaseConfig`
+4. Authentication → Settings → Authorized domains → add your Cloud Run frontend URL
+
+### Step 9 — Deploy frontend
 
 ```bash
 cd frontend
-
-# Copy env template and fill in your Firebase config + backend URL
 cp .env.example .env.local
+# Fill in Firebase config + VITE_API_URL
 
-# Edit .env.local with your values:
-#   VITE_FIREBASE_API_KEY=...
-#   VITE_FIREBASE_AUTH_DOMAIN=...
-#   VITE_FIREBASE_PROJECT_ID=...
-#   VITE_FIREBASE_APP_ID=...
-#   VITE_API_URL=<your BACKEND_URL from step 7>
+npm install && npm run build
+docker build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/frontend:v1 .
+docker push us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/frontend:v1
 
-npm install
-npm run build
-
-# Build and push frontend image
-FRONTEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/pulseq/frontend:v1"
-docker build -t "$FRONTEND_IMAGE" .
-docker push "$FRONTEND_IMAGE"
-
-# Deploy to Cloud Run (public — this is the UI)
 gcloud run deploy pulseq-frontend \
-  --image "$FRONTEND_IMAGE" \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --port 8080 \
+  --image us-central1-docker.pkg.dev/${PROJECT_ID}/pulseq/frontend:v1 \
+  --region us-central1 --allow-unauthenticated --port 8080 \
   --project $PROJECT_ID
-
 cd ..
 ```
 
----
+### Step 10 — Post-deploy KEDA fix
 
-### Step 9 — Test the full flow
+After creating your first org, update KEDA to watch the correct subscription:
 
 ```bash
-# 1. Open the frontend URL in your browser
-gcloud run services describe pulseq-frontend \
-  --region us-central1 \
-  --format 'value(status.url)' \
-  --project $PROJECT_ID
+kubectl annotate serviceaccount pulseq-consumer \
+  iam.gke.io/gcp-service-account=pulseq-consumer@${PROJECT_ID}.iam.gserviceaccount.com \
+  --overwrite
 
-# 2. Sign up → create your org → land on dashboard
+# Replace pulseq-YOUR-ORG-sub with subscription name shown in dashboard
+kubectl patch scaledobject pulseq-consumer-scaledobject --type merge \
+  -p '{"spec":{"triggers":[{"type":"gcp-pubsub","authenticationRef":{"kind":"TriggerAuthentication","name":"pulseq-gcp-trigger-auth"},"metadata":{"mode":"SubscriptionSize","value":"5","subscriptionName":"pulseq-YOUR-ORG-sub"}}]}}'
 
-# 3. In a terminal, watch pods scale in real time:
-kubectl get pods -l app=pulseq-consumer -w
-
-# 4. In another terminal, fire a burst of messages:
-COUNT=30 bash scripts/generate-message.sh
-
-# 5. Watch the dashboard — queue depth rises, replicas scale up
-#    When messages drain, replicas scale back to 0
+kubectl rollout restart deployment/pulseq-consumer
 ```
 
 ---
 
-### Step 10 — Set up GitHub Actions CI/CD (optional but recommended)
+## GitHub Actions CI/CD
 
-1. Push your code to GitHub
-2. In GitHub repo → **Settings** → **Variables** → add:
-   - `PROJECT_ID` = your GCP project ID
-   - `REGION` = `us-central1`
-3. Set up Workload Identity Federation (no JSON keys in CI):
+| Pipeline | Trigger | Steps |
+|----------|---------|-------|
+| `backend.yml` | `backend/**` pushed | Lint (ruff) → Build AMD64 → Push to AR → Deploy Cloud Run |
+| `consumer.yml` | `consumer/**` or `manifests/**` | Build AMD64 → Push to AR → Deploy to GKE |
+| `frontend.yml` | `frontend/**` | Build → Push to AR → Deploy Cloud Run |
 
-```bash
-# Create WIF pool
-gcloud iam workload-identity-pools create github-pool \
-  --location global \
-  --project $PROJECT_ID
-
-# Create provider
-gcloud iam workload-identity-pools providers create-oidc github-provider \
-  --location global \
-  --workload-identity-pool github-pool \
-  --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --issuer-uri "https://token.actions.githubusercontent.com" \
-  --project $PROJECT_ID
-
-# Bind your SA to the pool (replace YOUR_GITHUB_USER/pulseq)
-gcloud iam service-accounts add-iam-policy-binding \
-  "pulseq-backend@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role roles/iam.workloadIdentityUser \
-  --member "principalSet://iam.googleapis.com/projects/$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_USER/pulseq"
-
-# Get the WIF provider resource name → add as GitHub secret WIF_PROVIDER
-gcloud iam workload-identity-pools providers describe github-provider \
-  --location global \
-  --workload-identity-pool github-pool \
-  --format 'value(name)' \
-  --project $PROJECT_ID
-```
-
-4. Add GitHub secrets:
-   - `WIF_PROVIDER` = output from above
-   - `GCP_SA_EMAIL` = `pulseq-backend@YOUR_PROJECT_ID.iam.gserviceaccount.com`
-
-Now every push to `main` auto-deploys backend and consumer.
+**Required GitHub secrets:**
+- `GCP_CREDENTIALS_JSON` — service account JSON for `pulseq-backend` SA
+- `DATABASE_URL` — PostgreSQL connection string
 
 ---
 
@@ -299,58 +306,116 @@ cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Set up local Postgres
 docker run -d --name pulseq-pg \
-  -e POSTGRES_USER=pulseq \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=pulseqdb \
-  -p 5432:5432 postgres:15
+  -e POSTGRES_USER=pulseq -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=pulseqdb -p 5432:5432 postgres:15
 
 cp .env.example .env
-# Edit .env: set DATABASE_URL and FIREBASE_CREDENTIALS_PATH
-
 uvicorn app.main:app --reload --port 8080
-# API docs: http://localhost:8080/docs
+# Docs: http://localhost:8080/docs
 ```
 
 ### Frontend
 
 ```bash
-cd frontend
-npm install
+cd frontend && npm install
 cp .env.example .env.local
-# Edit .env.local with Firebase config + VITE_API_URL=http://localhost:8080
 npm run dev
-# Open http://localhost:3000
+# http://localhost:3000
 ```
 
 ---
 
-## Architecture
+## API reference
 
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/health` | GET | None | Health check |
+| `/auth/me` | GET | JWT | Current user profile |
+| `/orgs/` | POST | JWT | Create org + provision Pub/Sub topic |
+| `/orgs/me` | GET | JWT | Get current org |
+| `/users/` | GET | JWT | List users in org |
+| `/messages/publish` | POST | JWT | Publish messages to org topic |
+| `/messages/status` | GET | JWT | Queue depth + replica count |
+
+Full interactive docs at: `https://YOUR-BACKEND-URL.us-central1.run.app/docs`
+
+---
+
+## Cost
+
+| Service | Spec | Monthly |
+|---------|------|---------|
+| GKE cluster | 2x e2-standard-2 | ~$97 |
+| Cloud SQL | db-f1-micro | ~$10 |
+| VPC connector | 2x e2-micro | ~$15 |
+| Cloud Run backend | min 1 instance, 1Gi | ~$5 |
+| Cloud Run frontend | scales to zero | ~$1 |
+| Pub/Sub + Monitoring | pay per use | ~$1 |
+| **Total** | | **~$130/month** |
+
+Scale GKE to zero when not in use to save ~$97/month:
+
+```bash
+gcloud container clusters resize pulseq-cluster \
+  --node-pool pulseq-nodes --num-nodes 0 \
+  --region us-central1 --project $PROJECT_ID --quiet
 ```
-User → Firebase Auth → FastAPI (Cloud Run)
-                           ├── Cloud SQL (orgs, users)
-                           ├── Secret Manager (DB creds)
-                           └── Pub/Sub (per-org topic)
-                                   ↓
-                           KEDA ScaledObject
-                                   ↓
-                           HPA → Consumer Pods (0–10)
-                                   ↓ ack messages
+
+---
+
+## Teardown
+
+```bash
+kubectl delete all --all
+
+cd infra
+terraform destroy \
+  -var="project_id=$PROJECT_ID" \
+  -var="region=us-central1" \
+  -var="db_password=your-password"
+
+gcloud projects delete $PROJECT_ID
 ```
+
+---
 
 ## Project structure
 
 ```
 pulseq/
-├── infra/          Terraform — GKE, SQL, Pub/Sub, IAM, VPC
-├── backend/        FastAPI API — auth, orgs, users, messages
-├── consumer/       GKE worker pod — Pub/Sub subscriber
-├── manifests/      Kubernetes + KEDA manifests
-├── frontend/       React dashboard
-├── scripts/        Bootstrap + message generator
-└── .github/        GitHub Actions CI/CD pipelines
+├── infra/                  Terraform — GKE, SQL, Pub/Sub, IAM, VPC
+├── backend/                FastAPI multi-tenant API
+│   └── app/
+│       ├── main.py         Entry point, CORS
+│       ├── auth.py         Firebase JWT verification
+│       ├── models.py       Org, User (SQLAlchemy)
+│       ├── database.py     Async PostgreSQL
+│       └── routers/        auth, orgs, users, messages, health
+├── consumer/               GKE worker pod (Pub/Sub subscriber)
+├── manifests/              Kubernetes + KEDA manifests
+├── frontend/               React dashboard (TypeScript)
+├── scripts/                Bootstrap + message generator
+└── .github/workflows/      Backend, consumer, frontend CI/CD
 ```
-# trigger
-# trigger
+
+---
+
+## Security
+
+- Firebase JWT required on all endpoints except `/health`
+- `org_id` enforced on every database query — no cross-tenant access possible
+- GCP Workload Identity — no credential files in pods or CI/CD runners
+- Cloud SQL private VPC — no public IP, accessible only via VPC connector
+- Secrets in GCP Secret Manager — injected at runtime via `--set-secrets`
+- CORS restricted to frontend domain only
+- Branch protection on `main` — PRs required, force push blocked
+- Dependabot watching pip, npm, docker, terraform, and GitHub Actions
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+---
+
+## License
+
+MIT
